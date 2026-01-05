@@ -396,7 +396,7 @@ const App: React.FC = () => {
     return (
       <div className="app">
         <header className="header">
-          <h1>Local Reservations</h1>
+          <h1>Razorback Pizza Reservations</h1>
         </header>
         <main className="page">
           <div className="card date-picker">
@@ -413,7 +413,7 @@ const App: React.FC = () => {
               {loading ? 'Opening...' : 'Open'}
             </button>
             <div className="footer-note">
-              The layout will initialize from the default template the first time you open a date.
+              Reservation app for Razorback Pizza. Create or load a floor plan for the selected date.
             </div>
           </div>
         </main>
