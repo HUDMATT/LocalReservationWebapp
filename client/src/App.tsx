@@ -67,6 +67,7 @@ const App: React.FC = () => {
   const [modal, setModal] = useState<ModalState | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [canvasWidth, setCanvasWidth] = useState(957);
+  const notificationTimeouts = useRef<number[]>([]);
 
   const dragRef = useRef<{
     tableId: number;
@@ -109,6 +110,63 @@ const App: React.FC = () => {
   const showToast = (message: string, type?: 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
+  };
+
+  const requestNotificationPermission = async () => {
+    if (!('Notification' in window)) {
+      showToast('Notifications are not supported in this browser.', 'error');
+      return;
+    }
+    if (Notification.permission === 'granted') {
+      showToast('Notifications already enabled.');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      showToast('Notifications blocked. Enable them in Chrome settings.', 'error');
+    }
+  };
+
+  const clearNotifications = () => {
+    notificationTimeouts.current.forEach((id) => window.clearTimeout(id));
+    notificationTimeouts.current = [];
+  };
+
+  const scheduleNotifications = () => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') {
+      return;
+    }
+    clearNotifications();
+    if (!activeDate) {
+      return;
+    }
+    const now = Date.now();
+    reservations.forEach((reservation) => {
+      const [hourStr, minuteStr] = reservation.time.split(':');
+      const hour = Number(hourStr);
+      const minute = Number(minuteStr);
+      if (Number.isNaN(hour) || Number.isNaN(minute)) {
+        return;
+      }
+      const reservationDateTime = new Date(`${activeDate}T${reservation.time}:00`);
+      const offsets = [
+        { minutes: 60, label: '1 hour' },
+        { minutes: 30, label: '30 minutes' }
+      ];
+      offsets.forEach((offset) => {
+        const notifyAt = reservationDateTime.getTime() - offset.minutes * 60 * 1000;
+        const delay = notifyAt - now;
+        if (delay <= 0) {
+          return;
+        }
+        const timeoutId = window.setTimeout(() => {
+          new Notification('Upcoming reservation', {
+            body: `${reservation.name} in ${offset.label} (${formatTime(reservation.time)})`
+          });
+        }, delay);
+        notificationTimeouts.current.push(timeoutId);
+      });
+    });
   };
 
   const loadLayout = async (date: string) => {
@@ -392,6 +450,11 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', updateWidth);
   }, []);
 
+  useEffect(() => {
+    scheduleNotifications();
+    return () => clearNotifications();
+  }, [reservations, activeDate]);
+
   if (!activeDate) {
     return (
       <div className="app">
@@ -442,6 +505,9 @@ const App: React.FC = () => {
           </button>
           <button className="button secondary" onClick={refreshLayout}>
             Refresh
+          </button>
+          <button className="button secondary" onClick={requestNotificationPermission}>
+            Enable notifications
           </button>
           <div className="footer-note">Shift+click to multi-select tables.</div>
         </div>
