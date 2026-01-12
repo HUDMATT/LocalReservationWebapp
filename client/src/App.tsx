@@ -28,7 +28,8 @@ type Reservation = {
 type ModalState = {
   groupId: number;
   tableNames: string;
-  reservation: Reservation | null;
+  reservations: Reservation[];
+  defaultReservationId: number | null;
 };
 
 type ToastState = {
@@ -78,9 +79,14 @@ const App: React.FC = () => {
   } | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
 
-  const reservationByGroup = useMemo(() => {
-    const map = new Map<number, Reservation>();
-    reservations.forEach((res) => map.set(res.groupId, res));
+  const reservationsByGroup = useMemo(() => {
+    const map = new Map<number, Reservation[]>();
+    reservations.forEach((res) => {
+      const list = map.get(res.groupId) || [];
+      list.push(res);
+      map.set(res.groupId, list);
+    });
+    map.forEach((list) => list.sort((a, b) => a.time.localeCompare(b.time)));
     return map;
   }, [reservations]);
 
@@ -309,7 +315,7 @@ const App: React.FC = () => {
       showToast('Select a grouped set of tables.', 'error');
       return;
     }
-    if (reservationByGroup.has(selectedGroupId)) {
+    if ((reservationsByGroup.get(selectedGroupId) || []).length > 0) {
       showToast('Delete the reservation before ungrouping.', 'error');
       return;
     }
@@ -362,15 +368,17 @@ const App: React.FC = () => {
       showToast('Could not open reservation.', 'error');
       return;
     }
-    const reservation = reservationByGroup.get(groupId) || null;
+    const groupReservations = reservationsByGroup.get(groupId) || [];
     const groupTables = groupMap.get(groupId)?.tableIds || [table.tableId];
     const tableNames = groupTables
       .map((id) => tables.find((item) => item.tableId === id)?.name || `T${id}`)
       .join(', ');
-    setModal({ groupId, tableNames, reservation });
+    const defaultReservationId = groupReservations[0]?.id ?? null;
+    setModal({ groupId, tableNames, reservations: groupReservations, defaultReservationId });
   };
 
   const handleReservationSave = async (data: {
+    reservationId?: number | null;
     time: string;
     name: string;
     partySize: number;
@@ -383,7 +391,11 @@ const App: React.FC = () => {
       const response = await fetch(`${API_BASE}/layout/${activeDate}/reservation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ groupId: modal.groupId, ...data })
+        body: JSON.stringify({
+          groupId: modal.groupId,
+          reservationId: data.reservationId ?? null,
+          ...data
+        })
       });
       if (!response.ok) {
         const payload = await response.json();
@@ -396,14 +408,17 @@ const App: React.FC = () => {
     }
   };
 
-  const handleReservationDelete = async () => {
-    if (!activeDate || !modal?.reservation) {
+  const handleReservationDelete = async (reservationId?: number | null) => {
+    if (!activeDate || !reservationId) {
       return;
     }
     try {
-      await fetch(`${API_BASE}/layout/${activeDate}/reservation/${modal.reservation.id}`, {
-        method: 'DELETE'
-      });
+      await fetch(
+        `${API_BASE}/layout/${activeDate}/reservation/${reservationId}`,
+        {
+          method: 'DELETE'
+        }
+      );
       setModal(null);
       await refreshLayout();
     } catch (err) {
@@ -413,9 +428,9 @@ const App: React.FC = () => {
 
   const reservationLabels = useMemo(() => {
     const LABEL_PADDING = 12;
-    return reservations
-      .map((reservation) => {
-        const tablesInGroup = tables.filter((table) => table.groupId === reservation.groupId);
+    return Array.from(reservationsByGroup.entries())
+      .map(([groupId, groupReservations]) => {
+        const tablesInGroup = tables.filter((table) => table.groupId === groupId);
         if (tablesInGroup.length === 0) {
           return null;
         }
@@ -425,19 +440,22 @@ const App: React.FC = () => {
         const maxY = Math.max(
           ...tablesInGroup.map((table) => table.y + table.height)
         );
+        const primary = groupReservations[0];
+        const extraCount = groupReservations.length - 1;
+        const extraText = extraCount > 0 ? ` +${extraCount}` : '';
         const clampedX = Math.min(
           Math.max(avgX, LABEL_PADDING),
           canvasWidth - LABEL_PADDING
         );
         return {
-          id: reservation.id,
+          id: groupId,
           x: clampedX,
           y: maxY + 10,
-          text: `${reservation.name} - ${formatTime(reservation.time)} (${reservation.partySize})`
+          text: `${primary.name} - ${formatTime(primary.time)} (${primary.partySize})${extraText}`
         };
       })
       .filter(Boolean) as Array<{ id: number; x: number; y: number; text: string }>;
-  }, [reservations, tables]);
+  }, [reservationsByGroup, tables, canvasWidth]);
 
   useEffect(() => {
     const updateWidth = () => {
@@ -513,7 +531,9 @@ const App: React.FC = () => {
         </div>
         <div className="canvas" ref={canvasRef}>
           {tables.map((table) => {
-            const reserved = table.groupId ? reservationByGroup.has(table.groupId) : false;
+            const reserved = table.groupId
+              ? (reservationsByGroup.get(table.groupId) || []).length > 0
+              : false;
             const selected = selectedTableIds.includes(table.tableId);
             return (
               <div
@@ -562,8 +582,14 @@ const App: React.FC = () => {
 type ReservationModalProps = {
   modal: ModalState;
   onClose: () => void;
-  onSave: (data: { time: string; name: string; partySize: number; notes?: string }) => void;
-  onDelete: () => void;
+  onSave: (data: {
+    reservationId?: number | null;
+    time: string;
+    name: string;
+    partySize: number;
+    notes?: string;
+  }) => void;
+  onDelete: (reservationId?: number | null) => void;
 };
 
 const ReservationModal: React.FC<ReservationModalProps> = ({
@@ -572,19 +598,40 @@ const ReservationModal: React.FC<ReservationModalProps> = ({
   onSave,
   onDelete
 }) => {
-  const [time, setTime] = useState(modal.reservation?.time || '18:30');
-  const [name, setName] = useState(modal.reservation?.name || '');
-  const [partySize, setPartySize] = useState(
-    modal.reservation?.partySize?.toString() || '2'
+  const [selectedId, setSelectedId] = useState(
+    modal.defaultReservationId ? modal.defaultReservationId.toString() : ''
   );
-  const [notes, setNotes] = useState(modal.reservation?.notes || '');
+  const currentReservation =
+    modal.reservations.find((reservation) => reservation.id.toString() === selectedId) ||
+    null;
+  const [time, setTime] = useState(currentReservation?.time || '18:30');
+  const [name, setName] = useState(currentReservation?.name || '');
+  const [partySize, setPartySize] = useState(
+    currentReservation?.partySize?.toString() || '2'
+  );
+  const [notes, setNotes] = useState(currentReservation?.notes || '');
+
+  useEffect(() => {
+    const reservation =
+      modal.reservations.find((item) => item.id.toString() === selectedId) || null;
+    setTime(reservation?.time || '18:30');
+    setName(reservation?.name || '');
+    setPartySize(reservation?.partySize?.toString() || '2');
+    setNotes(reservation?.notes || '');
+  }, [selectedId, modal.reservations]);
 
   const submit = () => {
     const size = Number(partySize);
     if (!time || !name || Number.isNaN(size)) {
       return;
     }
-    onSave({ time, name, partySize: size, notes });
+    onSave({
+      reservationId: selectedId ? Number(selectedId) : null,
+      time,
+      name,
+      partySize: size,
+      notes
+    });
   };
 
   return (
@@ -592,6 +639,21 @@ const ReservationModal: React.FC<ReservationModalProps> = ({
       <div className="modal" onClick={(event) => event.stopPropagation()}>
         <h2>Reservation</h2>
         <div className="footer-note">Tables: {modal.tableNames}</div>
+        <label>
+          Existing reservations
+          <select
+            className="input"
+            value={selectedId}
+            onChange={(event) => setSelectedId(event.target.value)}
+          >
+            <option value="">New reservation</option>
+            {modal.reservations.map((reservation) => (
+              <option key={reservation.id} value={reservation.id}>
+                {reservation.name} - {formatTime(reservation.time)}
+              </option>
+            ))}
+          </select>
+        </label>
         <label>
           Time
           <input
@@ -634,8 +696,8 @@ const ReservationModal: React.FC<ReservationModalProps> = ({
           <button className="button secondary" onClick={onClose}>
             Cancel
           </button>
-          {modal.reservation && (
-            <button className="button secondary" onClick={onDelete}>
+          {selectedId && (
+            <button className="button secondary" onClick={() => onDelete(Number(selectedId))}>
               Delete
             </button>
           )}

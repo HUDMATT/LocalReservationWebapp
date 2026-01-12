@@ -241,7 +241,7 @@ app.post('/api/layout/:date/ungroup', async (req, res) => {
 app.post('/api/layout/:date/reservation', async (req, res) => {
   try {
     const { date } = req.params;
-    const { groupId, time, name, partySize, notes } = req.body;
+    const { groupId, reservationId, time, name, partySize, notes } = req.body;
     if (!Number.isFinite(groupId) || !time || !name || !Number.isFinite(partySize)) {
       res.status(400).json({ error: 'Missing reservation fields.' });
       return;
@@ -252,16 +252,20 @@ app.post('/api/layout/:date/reservation', async (req, res) => {
       return;
     }
     const now = new Date().toISOString();
-    const existing = await get(
-      'SELECT id FROM reservations WHERE layoutInstanceId = ? AND groupId = ?',
-      [layout.id, groupId]
-    );
-    if (existing) {
+    if (Number.isFinite(reservationId)) {
+      const existing = await get(
+        'SELECT id FROM reservations WHERE id = ? AND layoutInstanceId = ?',
+        [reservationId, layout.id]
+      );
+      if (!existing) {
+        res.status(404).json({ error: 'Reservation not found.' });
+        return;
+      }
       await run(
         'UPDATE reservations SET time = ?, name = ?, partySize = ?, notes = ?, updatedAt = ? WHERE id = ?',
-        [time, name, partySize, notes || null, now, existing.id]
+        [time, name, partySize, notes || null, now, reservationId]
       );
-      res.json({ id: existing.id, groupId, time, name, partySize, notes: notes || null });
+      res.json({ id: reservationId, groupId, time, name, partySize, notes: notes || null });
       return;
     }
     const created = await run(
